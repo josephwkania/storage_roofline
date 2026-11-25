@@ -42,6 +42,12 @@ def script(args, fio: str) -> str:
              f"#SBATCH --output={outdir}/storage_roofline_{label}_%j.log"]
     if args.partition:
         lines.append(f"#SBATCH --partition={args.partition}")
+    begin = getattr(args, "begin", None)
+    if getattr(args, "random_delay", None):
+        import random
+        begin = f"now+{random.randint(0, args.random_delay)}"
+    if begin:
+        lines.append(f"#SBATCH --begin={begin}")
     if args.account:
         lines.append(f"#SBATCH --account={args.account}")
     run = [sys.executable, "-m", "storage_roofline", "run",

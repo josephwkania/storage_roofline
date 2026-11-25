@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from storage_roofline import result as res
+from storage_roofline.aggregate import display_label
 from storage_roofline.units import fmt_size
 
 # Categorical colours, assigned in this fixed order (validated for colour-vision
@@ -37,6 +38,17 @@ def _check(results: list) -> None:
         raise SystemExit(f"at most {len(COLOURS)} results per plot; split them into groups")
 
 
+def _errorbars(ax, xs, pts, field, colour) -> None:
+    """Range across runs (combined results only)."""
+    if not any(f"{field}_lo" in p for p in pts):
+        return
+    ys = [p[field] for p in pts]
+    lo = [y - p.get(f"{field}_lo", y) for y, p in zip(ys, pts)]
+    hi = [p.get(f"{field}_hi", y) - y for y, p in zip(ys, pts)]
+    ax.errorbar(xs, ys, yerr=[lo, hi], fmt="none", ecolor=colour, elinewidth=1, alpha=0.6,
+                capsize=2, zorder=2)
+
+
 def roofline(results: list, out_file: str, title: str | None = None) -> None:
     """Throughput against data in flight, with each result's roofs and latency line."""
     _check(results)
@@ -62,13 +74,21 @@ def roofline(results: list, out_file: str, title: str | None = None) -> None:
             y = x / (lat / 1000) / 1e6
             ax.plot(x, np.minimum(y, roof or np.inf), color=colour, linewidth=1,
                     linestyle="--", alpha=0.7, zorder=1)
+        ranges = r.get("ranges", {})
         if roof:
             ax.axhline(roof, color=colour, linewidth=1.3, zorder=1)
+            if ranges.get("client_roof"):
+                ax.axhspan(ranges["client_roof"][0], ranges["client_roof"][2], color=colour,
+                           alpha=0.12, linewidth=0, zorder=0)
         if cluster:
             ax.axhline(cluster, color=colour, linewidth=1.3, linestyle=":", zorder=1)
+            if ranges.get("cluster_roof"):
+                ax.axhspan(ranges["cluster_roof"][0], ranges["cluster_roof"][2], color=colour,
+                           alpha=0.12, linewidth=0, zorder=0)
         for kind, marker in MARKERS.items():
             pts = [p for p in r["points"] if p["kind"] == kind and p.get("inflight_bytes")]
             if pts:
+                _errorbars(ax, [p["inflight_bytes"] for p in pts], pts, "mbps", colour)
                 ax.scatter([p["inflight_bytes"] for p in pts], [p["mbps"] for p in pts],
                            s=44, marker=marker, color=colour, edgecolor="white",
                            linewidth=1.3, zorder=3)
@@ -81,7 +101,7 @@ def roofline(results: list, out_file: str, title: str | None = None) -> None:
             parts.append(f"cluster >= {_gbs(cluster)} ({cluster_nodes} nodes)")
         handles.append(Line2D([], [], color=colour, linewidth=6))
         mark = " *" if res.notes_for(r) else ""
-        labels.append(r["label"] + mark + ("\n  " + ", ".join(parts) if parts else ""))
+        labels.append(display_label(r) + mark + ("\n  " + ", ".join(parts) if parts else ""))
 
     # Key entries only for what is actually drawn.
     shown = {p["kind"] for r in results for p in r["points"] if p.get("inflight_bytes")}
@@ -154,11 +174,12 @@ def iops_view(results: list, out_file: str, title: str | None = None) -> None:
         for kind, marker in MARKERS.items():
             sel = [p for p in pts if p["kind"] == kind]
             if sel:
+                _errorbars(ax, [1 / p["bs"] for p in sel], sel, "iops", colour)
                 ax.scatter([1 / p["bs"] for p in sel], [p["iops"] for p in sel], s=44,
                            marker=marker, color=colour, edgecolor="white", linewidth=1.3,
                            zorder=3)
         handles.append(Line2D([], [], color=colour, linewidth=6))
-        labels.append(f"{r['label']}" + (f"\n  peak {peak_iops:,.0f} IOPS, {_gbs(peak_bw)}"
+        labels.append(display_label(r) + (f"\n  peak {peak_iops:,.0f} IOPS, {_gbs(peak_bw)}"
                                          if peak_iops and peak_bw else ""))
     shown = {p["kind"] for p in pts_all}
     for kind, marker in MARKERS.items():
@@ -203,8 +224,14 @@ def metadata_chart(results: list, out_file: str) -> bool:
         m = r["metadata"]
         values = [m.get(key) or 0 for key, _ in ops]
         pos = np.arange(len(ops)) + (i - (len(with_meta) - 1) / 2) * width
-        ax.bar(pos, values, width=width * 0.92, color=colour,
-               label=f"{r['label']} ({'cold' if m.get('cold') else 'warm'} client cache)")
+        ranges = [m.get(key + "_range") for key, _ in ops]
+        yerr = None
+        if any(ranges):
+            yerr = [[v - (rg or (v, v))[0] for v, rg in zip(values, ranges)],
+                    [(rg or (v, v))[1] - v for v, rg in zip(values, ranges)]]
+        ax.bar(pos, values, width=width * 0.92, color=colour, yerr=yerr,
+               error_kw={"elinewidth": 1, "capsize": 2, "ecolor": INK},
+               label=f"{display_label(r)} ({'cold' if m.get('cold') else 'warm'} client cache)")
     ax.set_xticks(np.arange(len(ops)), [name for _, name in ops])
     ax.set_yscale("log")
     ax.set_ylabel("Files per second")
@@ -223,7 +250,7 @@ def metadata_chart(results: list, out_file: str) -> bool:
 
 def _footnotes(fig, results: list) -> None:
     """Each result's caveats, under the plot."""
-    lines = [f"* {r['label']}: {note}" for r in results for note in res.notes_for(r)]
+    lines = [f"* {display_label(r)}: {note}" for r in results for note in res.notes_for(r)]
     if lines:
         fig.text(0.01, -0.02, "\n".join(lines), fontsize=7, color=MUTED, va="top",
                  ha="left", wrap=True)
@@ -245,8 +272,9 @@ def summary(results: list) -> str:
             return format(value, spec) if value is not None else "-"
 
         rows.append([
-            ("label", r["label"]),
-            ("date", r["created"][:10]),
+            ("label", display_label(r)),
+            ("date", (r["first_created"][:10] + " to " if r.get("first_created") else "")
+             + r["created"][:10]),
             ("filesystem", f"{c.get('fs_type')} at {c.get('mount_point')}"),
             ("client NIC", f"{nic / 1000:g} Gb/s" if nic else "-"),
             ("readahead", fmt_size(c["readahead_bytes"]) if c.get("readahead_bytes") else "-"),
@@ -262,7 +290,7 @@ def summary(results: list) -> str:
             ("python import", fmt(m.get("import_s"), ".1f") + " s" if m.get("import_s") else "-"),
         ])
     names = [k for k, _ in rows[0]]
-    notes = [f"* {r['label']}: {note}" for r in results for note in res.notes_for(r)]
+    notes = [f"* {display_label(r)}: {note}" for r in results for note in res.notes_for(r)]
     name_width = max(len(n) for n in names)
     col_widths = [max(len(str(v)) for _, v in r) for r in rows]
     lines = []

@@ -140,3 +140,54 @@ def test_legend_only_lists_drawn_things(tmp_path, monkeypatch):
     assert not any("buffered" in l for l in seen["labels"])
     plot.roofline([fake_result("ceph", 25, 1160, cluster=4300)], str(tmp_path / "r.png"))
     assert any("cluster roof" in l for l in seen["labels"])
+
+
+def _repeat(label, n, start_day=1, **kw):
+    runs = []
+    for i in range(n):
+        r = fake_result(label, 20 + i, 1000 + 10 * i, **kw)
+        r["created"] = f"2026-11-{start_day + i:02d}T03:00:00+00:00"
+        r["context"]["kernel"] = "5.14" if i < n // 2 else "5.15"
+        runs.append(r)
+    return runs
+
+
+def test_combine_runs_with_ranges():
+    from storage_roofline import aggregate
+    combined = aggregate.combine_all(_repeat("ceph", 5, cluster=4000) + [fake_result("nfs", 1, 900)])
+    assert [c["label"] for c in combined] == ["ceph", "nfs"]
+    ceph = combined[0]
+    assert ceph["runs"] == 5 and aggregate.display_label(ceph) == "ceph (5 runs)"
+    lo, mid, hi = ceph["ranges"]["client_roof"]
+    assert lo == 1000 and hi == 1040 and mid == 1020
+    p = res.find_point(ceph, "direct_read", "randread", 4 * K, 1)
+    assert p["mbps_lo"] <= p["mbps"] <= p["mbps_hi"] and p["runs"] == 5
+    assert "open_read_per_s_range" in ceph["metadata"]
+    assert combined[1] is not None and "runs" not in combined[1]
+
+
+def test_plot_combined_and_history(tmp_path, capsys):
+    pytest.importorskip("matplotlib")
+    paths = []
+    for i, r in enumerate(_repeat("ceph", 6, cluster=4000) + _repeat("nfs", 4, start_day=3)):
+        path = tmp_path / f"{i}.json"
+        res.save(r, str(path))
+        paths.append(str(path))
+    assert main(["plot", *paths, "-o", str(tmp_path / "p.png")]) == 0
+    assert main(["summary", *paths]) == 0
+    assert "ceph (6 runs)" in capsys.readouterr().out
+    assert main(["history", *paths, "-o", str(tmp_path / "h.png"), "--since", "2026-11-02"]) == 0
+    out = capsys.readouterr().out
+    assert "ceph: 5 runs" in out and "kernel 5.14 -> 5.15" in out
+    assert (tmp_path / "h.png").stat().st_size > 10000
+
+
+def test_random_begin(tmp_path):
+    from storage_roofline.cli import parse_duration
+    assert parse_duration("24h") == 86400 and parse_duration("90m") == 5400
+    args = argparse.Namespace(nodes=1, files=0, warm_metadata=False, profile="quick", runtime=10,
+                              size=2 ** 30, time=None, output_dir=str(tmp_path), label="x",
+                              partition=None, account=None, dir=str(tmp_path), python_import=None,
+                              readahead=None, read_once=False, begin=None, random_delay=86400)
+    line = [l for l in slurm.script(args, "f").splitlines() if "--begin" in l][0]
+    assert 0 <= int(line.split("now+")[1]) <= 86400

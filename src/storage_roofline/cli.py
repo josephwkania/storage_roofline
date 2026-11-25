@@ -68,6 +68,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--time", default=None, help="time limit (default: estimated)")
     p.add_argument("--output-dir", default=".", help="where the log and result go (default .)")
     p.add_argument("--submit", action="store_true", help="submit it with sbatch")
+    p.add_argument("--begin", default=None,
+                   help="earliest start, passed to sbatch --begin (e.g. 'now+2hours', '03:00')")
+    p.add_argument("--random-delay", type=parse_duration, default=None, metavar="DURATION",
+                   help="start at a random time within this long from now (e.g. 24h), so "
+                        "repeated runs from cron sample different times of day")
 
     p = sub.add_parser("plot", help="plot one or more results on one roofline")
     p.add_argument("results", nargs="+", help="result JSON files")
@@ -82,6 +87,12 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("summary", help="print the headline numbers of results side by side")
     p.add_argument("results", nargs="+")
 
+    p = sub.add_parser("history", help="headline numbers over time, one line per label")
+    p.add_argument("results", nargs="+", help="result JSON files (e.g. a directory's *.json)")
+    p.add_argument("-o", "--output", default="history.png", help="(default history.png)")
+    p.add_argument("--since", type=_date, default=None, metavar="YYYY-MM-DD")
+    p.add_argument("--title", default=None)
+
     # Internal: one node's part of the multi-node tests (started by srun).
     p = sub.add_parser("_worker")
     p.add_argument("phase", choices=["layout", "read", "clean", "meta-scan"])
@@ -94,6 +105,24 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--python-import", default=None)
     p.add_argument("--python", default=None)
     return parser
+
+
+def parse_duration(text: str) -> int:
+    """Seconds from "3600", "90m", "6h" or "2d"."""
+    import re
+    match = re.fullmatch(r"\s*(\d+)\s*([smhd]?)\s*", text, re.I)
+    if not match:
+        raise argparse.ArgumentTypeError(f"not a duration: {text!r} (use e.g. 90m, 24h)")
+    return int(match.group(1)) * {"": 1, "s": 1, "m": 60, "h": 3600, "d": 86400}[
+        match.group(2).lower()]
+
+
+def _date(text: str):
+    import datetime
+    try:
+        return datetime.datetime.strptime(text, "%Y-%m-%d")
+    except ValueError as exp:
+        raise argparse.ArgumentTypeError(f"not a date: {text!r} (use YYYY-MM-DD)") from exp
 
 
 def default_label(args) -> str:
@@ -129,8 +158,9 @@ def main(argv=None) -> int:
         return 0
 
     if args.command in ("plot", "summary"):
-        from storage_roofline import plot, result
-        results = [result.load(path) for path in args.results]
+        from storage_roofline import aggregate, plot, result
+        # Runs with the same label (e.g. from cron) become one series with ranges.
+        results = aggregate.combine_all([result.load(path) for path in args.results])
         if args.command == "summary":
             print(plot.summary(results))
             return 0
@@ -142,6 +172,16 @@ def main(argv=None) -> int:
         meta_out = args.metadata_output or os.path.splitext(args.output)[0] + "_metadata.png"
         if plot.metadata_chart(results, meta_out):
             print(f"wrote {meta_out}")
+        return 0
+
+    if args.command == "history":
+        from storage_roofline import history, result
+        results = history.select([result.load(path) for path in args.results], args.since)
+        if not results:
+            raise SystemExit("no results in that period")
+        print(history.summary(results))
+        history.plot(results, args.output, args.title)
+        print(f"wrote {args.output}")
         return 0
 
     if args.command == "_worker":
