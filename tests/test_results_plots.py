@@ -68,6 +68,7 @@ def test_plot_and_summary(tmp_path, capsys):
     assert main(["plot", *paths, "-o", str(out)]) == 0
     assert out.stat().st_size > 10000
     assert (tmp_path / "roof_metadata.png").exists()
+    assert (tmp_path / "roof_iops.png").stat().st_size > 10000
     assert main(["summary", *paths]) == 0
     text = capsys.readouterr().out
     assert "ceph" in text and "nfs" in text and "4.30 GB/s" in text
@@ -106,3 +107,36 @@ def test_caveats():
     notes = res.caveats(r)
     assert not any("--read-once)" in n for n in notes) and not any("warm" in n for n in notes)
     assert res.caveats(fake_result("ceph", 25, 1160, cluster=4300)) == []
+
+
+def test_slurm_one_node_gets_second_node_for_cold_metadata(tmp_path):
+    base = dict(profile="quick", runtime=10, size=2 ** 30, time=None, output_dir=str(tmp_path),
+                label="x", partition=None, account=None, dir=str(tmp_path), python_import=None,
+                readahead=None, read_once=False)
+    text = slurm.script(argparse.Namespace(nodes=1, files=1000, warm_metadata=False, **base), "f")
+    assert "#SBATCH --nodes=2" in text and "--single-node" in text
+    text = slurm.script(argparse.Namespace(nodes=1, files=1000, warm_metadata=True, **base), "f")
+    assert "#SBATCH --nodes=1" in text and "--single-node" not in text
+    text = slurm.script(argparse.Namespace(nodes=1, files=0, warm_metadata=False, **base), "f")
+    assert "#SBATCH --nodes=1" in text
+    text = slurm.script(argparse.Namespace(nodes=4, files=1000, warm_metadata=False, **base), "f")
+    assert "#SBATCH --nodes=4" in text and "--single-node" not in text
+
+
+def test_legend_only_lists_drawn_things(tmp_path, monkeypatch):
+    pytest.importorskip("matplotlib")
+    from storage_roofline import plot
+    seen = {}
+    import matplotlib.axes
+    original = matplotlib.axes.Axes.legend
+
+    def spy(self, handles=None, labels=None, **kw):
+        seen["labels"] = labels
+        return original(self, handles, labels, **kw)
+
+    monkeypatch.setattr(matplotlib.axes.Axes, "legend", spy)
+    plot.roofline([fake_result("nfs", 1, 900)], str(tmp_path / "r.png"))
+    assert not any("cluster roof" in l for l in seen["labels"])
+    assert not any("buffered" in l for l in seen["labels"])
+    plot.roofline([fake_result("ceph", 25, 1160, cluster=4300)], str(tmp_path / "r.png"))
+    assert any("cluster roof" in l for l in seen["labels"])

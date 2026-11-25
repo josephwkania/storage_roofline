@@ -25,8 +25,11 @@ def safe_label(label: str) -> str:
 
 
 def script(args, fio: str) -> str:
-    nodes = args.nodes
-    minutes = estimate_minutes(args.profile, args.runtime, nodes, args.size)
+    # One-node runs still get a second node, only to read the small files cold.
+    cold_meta_only = (args.nodes == 1 and args.files > 0
+                      and not getattr(args, "warm_metadata", False))
+    nodes = 2 if cold_meta_only else args.nodes
+    minutes = estimate_minutes(args.profile, args.runtime, args.nodes, args.size)
     time_limit = args.time or f"{minutes // 60}:{minutes % 60:02d}:00"
     outdir = os.path.abspath(args.output_dir)
     label = safe_label(args.label)
@@ -52,9 +55,13 @@ def script(args, fio: str) -> str:
         run += ["--readahead", str(args.readahead)]
     if getattr(args, "read_once", False):
         run.append("--read-once")
+    if cold_meta_only:
+        run.append("--single-node")
     cmd = " ".join(shlex.quote(a) for a in run)
     lines += ["",
               f"# storage-roofline: {args.profile} profile, about {minutes} min.",
+              *(["# Bandwidth tests on one node; the second node only reads the small",
+                 "# files, so that test sees a cold client cache."] if cold_meta_only else []),
               "# The multi-node part loads the whole filesystem: run it at a quiet",
               "# time, with the agreement of the people who run the storage.",
               "set -euo pipefail",

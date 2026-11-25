@@ -51,13 +51,18 @@ def build_parser() -> argparse.ArgumentParser:
     _add_run_options(p)
     p.add_argument("-o", "--output", default=None, help="result JSON (default: <label>.json)")
     p.add_argument("--single-node", action="store_true",
-                   help="skip the multi-node tests even in a multi-node allocation")
+                   help="skip the multi-node bandwidth tests even in a multi-node allocation "
+                        "(a second node is still used for the cold small-file read)")
     p.add_argument("--max-nodes", type=int, default=None, help="use at most this many nodes")
 
     p = sub.add_parser("slurm", help="write (and optionally submit) a Slurm batch script")
     _add_run_options(p)
     p.add_argument("--nodes", type=int, default=4,
-                   help="nodes (default 4); 1 skips the multi-node tests")
+                   help="nodes (default 4); with 1, the bandwidth tests use one node and a "
+                        "second node is still requested to read the small files cold")
+    p.add_argument("--warm-metadata", action="store_true",
+                   help="with --nodes 1, don't request the second node (small-file "
+                        "results are then warm)")
     p.add_argument("--partition", default=None)
     p.add_argument("--account", default=None)
     p.add_argument("--time", default=None, help="time limit (default: estimated)")
@@ -69,6 +74,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("-o", "--output", default="roofline.png", help="(default roofline.png)")
     p.add_argument("--metadata-output", default=None,
                    help="small-file chart (default: <output stem>_metadata.png)")
+    p.add_argument("--iops-output", default=None,
+                   help="IOPS view, as in Zhu et al.'s I/O roofline "
+                        "(default: <output stem>_iops.png)")
     p.add_argument("--title", default=None)
 
     p = sub.add_parser("summary", help="print the headline numbers of results side by side")
@@ -128,6 +136,9 @@ def main(argv=None) -> int:
             return 0
         plot.roofline(results, args.output, args.title)
         print(f"wrote {args.output}")
+        iops_out = args.iops_output or os.path.splitext(args.output)[0] + "_iops.png"
+        plot.iops_view(results, iops_out, args.title)
+        print(f"wrote {iops_out}")
         meta_out = args.metadata_output or os.path.splitext(args.output)[0] + "_metadata.png"
         if plot.metadata_chart(results, meta_out):
             print(f"wrote {meta_out}")

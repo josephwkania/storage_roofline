@@ -44,9 +44,11 @@ storage-roofline slurm --dir /path/on/the/fs/scratch --nodes 4 --partition main 
 storage-roofline slurm ... --submit         # submits it
 ```
 
-With more than one node you also get the aggregate (cluster) read and a
-**cold** small-file test: the files are created on one node and read on
-another, so the reading client has nothing cached.
+With more than one node you also get the aggregate (cluster) read. The
+small-file test is always **cold** in Slurm: the files are created on one node
+and read on another, so the reading client has nothing cached. With
+`--nodes 1` the script therefore asks for a second node, used only for that
+read (`--warm-metadata` keeps it to one node, with warm small-file results).
 
 **Without Slurm**, on one machine:
 
@@ -67,7 +69,7 @@ Useful options:
 | `--python-import "numpy scipy"` | | also time a fresh Python importing these modules |
 | `--readahead 8M` | from sysfs | if it can't be read, buffered reads are left off the plot |
 | `--read-once` | off | each read test reads its own part of the file once (see below) |
-| `--nodes` (slurm) | 4 | 1 skips the multi-node tests |
+| `--nodes` (slurm) | 4 | 1: bandwidth on one node (plus a second node for the cold small-file read) |
 
 A full run on 4 nodes takes about half an hour; `slurm` estimates the time
 limit for you.
@@ -79,7 +81,9 @@ storage-roofline plot cephfs.json lustre.json nfs.json -o roofline.png
 storage-roofline summary cephfs.json lustre.json nfs.json
 ```
 
-`plot` writes `roofline.png` and `roofline_metadata.png` (small files).
+`plot` writes `roofline.png`, `roofline_metadata.png` (small files) and
+`roofline_iops.png`, the same points as IOPS against operations per byte, the
+axes of Zhu et al.'s I/O roofline (see Related work).
 Each result gets a colour, its fitted latency line (dashed), its client roof
 (solid) and, if measured, its cluster roof (dotted). `summary` prints the
 headline numbers side by side.
@@ -128,6 +132,30 @@ filesystem on purpose. On shared systems, run them at quiet times and with
 the agreement of whoever runs the storage. Everything is written to a new
 subdirectory of `--dir` and removed at the end, also when the job is
 cancelled or hits its time limit.
+
+## Related work
+
+- **IO500** ([io500.org](https://io500.org)) is the standard HPC storage
+  benchmark: IOR and mdtest at scale, "easy" and "hard" patterns, one score,
+  and a public list for comparing sites. It needs MPI and long runs and is
+  about aggregate performance. storage-roofline is lighter (fio, no MPI,
+  minutes) and looks at the single client: how latency and data in flight
+  limit it, where its network roof is, and how cold small-file access
+  performs. The two complement each other.
+- **Empirical I/O roofline.** Z. Zhu, N. Bartelheimer and S. Neuwirth, *An
+  Empirical Roofline Model for Extreme-Scale I/O Workload Analysis* (ESSA
+  2023), and Z. Zhu and S. Neuwirth, *Characterization of Large-scale HPC
+  Workloads with non-naïve I/O Roofline Modeling and Scoring* (ICPADS 2023),
+  plot IOPS against I/O intensity (operations per byte) under
+  min(peak IOPS, peak bandwidth × intensity), with the peaks from IOR at scale
+  and applications placed from Darshan logs. M. Tang, Z. Zhu et al. apply it
+  to AWS S3 (SC'25 workshops). Their flat IOPS roof is whatever the full
+  system reaches; here the x-axis is data in flight instead, so latency and
+  concurrency are visible, which is what explains a single client's speed.
+  `roofline_iops.png` draws our points on their axes.
+- **Roofline for data services.** P. Carns et al., *Towards Empirical Roofline
+  Modeling of Distributed Data Services* (CUG 2025), builds network rooflines
+  for RPC services from per-client and per-server peaks, drawn as ranges.
 
 ## Development
 

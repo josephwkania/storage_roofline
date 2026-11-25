@@ -34,12 +34,18 @@ def run(args) -> dict:
         nodes = nodes[:args.max_nodes]
     multi = len(nodes) > 1 and not args.single_node
 
+    # Say what is really being tested: a symlink can lead to another filesystem.
+    mount = ctx.find_mount(directory)
+    real = os.path.realpath(directory)
+    log(f"testing {mount['fs_type']} mounted at {mount['mount_point']}"
+        + (f" (--dir resolves to {real})" if real != directory else ""))
+
     needed = args.size * (1 + (len(nodes) if multi else 0)) * 1.1 + args.files * 8192
     free = shutil.disk_usage(directory).free
     if free < needed:
         raise SystemExit(f"not enough free space in {directory}: need about "
                          f"{fmt_size(needed)}, have {fmt_size(free)} (lower --size)")
-    allowed = quota.remaining(directory, ctx.find_mount(directory))
+    allowed = quota.remaining(directory, mount)
     if allowed is None:
         log("quota: no limit visible from here (if one applies, keep --size well under it)")
     elif allowed[0] < needed:
@@ -74,7 +80,7 @@ def run(args) -> dict:
             out["multinode"] = multinode.aggregate_read(nodes, workdir, fio, args.size,
                                                         args.runtime, log)
         if args.files:
-            out["metadata"] = multinode.metadata(nodes if multi else [], workdir, args.files,
+            out["metadata"] = multinode.metadata(nodes, workdir, args.files,
                                                  args.dirs, args.python_import, args.python, log)
     except (fiolib.FioError, OSError, RuntimeError) as exp:
         if quota.is_quota_error(exp):
