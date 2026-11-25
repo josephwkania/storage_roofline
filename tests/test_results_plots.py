@@ -1,0 +1,108 @@
+import argparse
+import os
+
+import pytest
+
+from storage_roofline import metadata as meta
+from storage_roofline import result as res
+from storage_roofline import slurm
+from storage_roofline.cli import main
+
+K, M = 1024, 1024 ** 2
+
+
+def fake_result(label, latency_ms, roof, cluster=None):
+    """A result whose reads follow throughput = in flight / latency, capped at roof."""
+    r = res.new(label, {"fs_type": "test", "mount_point": "/t", "readahead_bytes": 8 * M,
+                        "nics_mbps": {"eth0": 10000}}, "quick", 64 * M, 1)
+    for bs, qd in ((4 * K, 1), (4 * K, 16), (M, 16), (4 * M, 1), (4 * M, 16)):
+        mbps = min(bs * qd / (latency_ms / 1000) / 1e6, roof)
+        r["points"].append({"kind": "direct_read", "rw": "randread" if bs < 4 * M else "read",
+                            "bs": bs, "iodepth": qd, "numjobs": 1, "inflight_bytes": bs * qd,
+                            "mbps": mbps, "iops": mbps * 1e6 / bs, "lat_mean_ms": latency_ms,
+                            "lat_p50_ms": latency_ms, "lat_p99_ms": latency_ms * 5})
+    r["points"].append({"kind": "write", "rw": "randwrite", "bs": 4 * K, "iodepth": 16,
+                        "numjobs": 1, "inflight_bytes": 64 * K, "mbps": 0.1, "iops": 25,
+                        "lat_mean_ms": 600, "lat_p50_ms": 590, "lat_p99_ms": 1500})
+    if cluster:
+        r["multinode"] = [{"nodes": 1, "aggregate_mbps": roof, "per_node_min_mbps": roof,
+                           "per_node_max_mbps": roof},
+                          {"nodes": 4, "aggregate_mbps": cluster, "per_node_min_mbps": 900,
+                           "per_node_max_mbps": 1000}]
+    r["metadata"] = {"files": 100, "file_bytes": 4096, "cold": bool(cluster),
+                     "create_per_s": 500, "stat_per_s": 5000, "open_read_per_s": 2000,
+                     "unlink_per_s": 800}
+    return r
+
+
+def test_derived_numbers():
+    r = fake_result("ceph", 25, 1160, cluster=4300)
+    assert res.latency_ms(r) == pytest.approx(25)
+    assert res.client_roof(r) == 1160
+    assert res.cluster_roof(r) == (4300, 4)
+    assert res.find_point(r, "direct_read", "randread", 4 * K, 1)["iodepth"] == 1
+
+
+def test_save_load_roundtrip(tmp_path):
+    r = fake_result("a", 1, 3000)
+    path = tmp_path / "a.json"
+    res.save(r, str(path))
+    assert res.load(str(path)) == r
+
+
+def test_load_rejects_other_json(tmp_path):
+    path = tmp_path / "x.json"
+    path.write_text('{"hello": 1}')
+    with pytest.raises(ValueError):
+        res.load(str(path))
+
+
+def test_plot_and_summary(tmp_path, capsys):
+    pytest.importorskip("matplotlib")
+    paths = []
+    for r in (fake_result("ceph", 25, 1160, cluster=4300), fake_result("nfs", 1, 900)):
+        path = tmp_path / f"{r['label']}.json"
+        res.save(r, str(path))
+        paths.append(str(path))
+    out = tmp_path / "roof.png"
+    assert main(["plot", *paths, "-o", str(out)]) == 0
+    assert out.stat().st_size > 10000
+    assert (tmp_path / "roof_metadata.png").exists()
+    assert main(["summary", *paths]) == 0
+    text = capsys.readouterr().out
+    assert "ceph" in text and "nfs" in text and "4.30 GB/s" in text
+
+
+def test_metadata_roundtrip(tmp_path):
+    created = meta.create(str(tmp_path / "m"), 50, 5)
+    scanned = meta.scan(str(tmp_path / "m"), 50, 5)
+    rates = meta.rates(created, scanned, cold=False)
+    assert rates["files"] == 50 and rates["open_read_per_s"] > 0
+    assert not any((tmp_path / "m").iterdir())
+
+
+def test_slurm_script(tmp_path):
+    args = argparse.Namespace(nodes=4, profile="full", runtime=30, size=32 * 2 ** 30,
+                              time=None, output_dir=str(tmp_path), label="my fs/test",
+                              partition="main", account=None, dir=str(tmp_path), files=20000,
+                              python_import="numpy", readahead=None)
+    text = slurm.script(args, "/opt/fio")
+    assert "#SBATCH --nodes=4" in text and "#SBATCH --exclusive" in text
+    assert "#SBATCH --partition=main" in text and "--account" not in text
+    assert "--fio /opt/fio" in text and "--python-import numpy" in text
+    assert "my_fs_test_${SLURM_JOB_ID}.json" in text
+    assert slurm.estimate_minutes("full", 30, 4, 32 * 2 ** 30) > 15
+
+
+def test_caveats():
+    r = fake_result("nfs", 1, 900)
+    r["context"]["fs_type"] = "nfs4"
+    notes = res.caveats(r)
+    assert any("server's memory" in n and "--read-once" in n for n in notes)
+    assert any("acknowledged" in n for n in notes)
+    assert any("warm" in n for n in notes)
+    r["settings"]["read_once"] = True
+    r["metadata"]["cold"] = True
+    notes = res.caveats(r)
+    assert not any("--read-once)" in n for n in notes) and not any("warm" in n for n in notes)
+    assert res.caveats(fake_result("ceph", 25, 1160, cluster=4300)) == []

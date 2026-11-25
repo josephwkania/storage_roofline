@@ -1,0 +1,12 @@
+__pycache__/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+# results and plots stay local unless added on purpose
+*.json
+!tests/data/*.json
+*.png
+*.log
+*.sbatch
+!examples/*.sbatch

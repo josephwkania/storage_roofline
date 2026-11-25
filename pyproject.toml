@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "storage-roofline"
+dynamic = ["version"]
+description = "Roofline-style storage benchmark: latency and bandwidth limits of a filesystem, comparable across clusters (fio, Slurm)"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {file = "LICENSE"}
+authors = [{name = "Joseph Kania"}]
+keywords = ["storage", "benchmark", "fio", "slurm", "hpc", "roofline", "ceph", "lustre"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+    "Operating System :: POSIX :: Linux",
+    "Topic :: System :: Benchmark",
+    "Topic :: System :: Filesystems",
+]
+dependencies = []
+
+[project.optional-dependencies]
+plot = ["numpy", "matplotlib"]
+test = ["pytest", "numpy", "matplotlib"]
+
+[project.scripts]
+storage-roofline = "storage_roofline.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/josephwkania/storage_roofline"
+
+[tool.setuptools.dynamic]
+version = {attr = "storage_roofline.__version__"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -1,0 +1,133 @@
+{
+ "fio version": "fio-3.43",
+ "jobs": [
+  {
+   "jobname": "randread_4k_qd1",
+   "read": {
+    "io_bytes": 5206016,
+    "bw_bytes": 86739,
+    "iops": 21.176627,
+    "runtime": 60019,
+    "lat_ns": {
+     "mean": 47208595.294256
+    },
+    "clat_ns": {
+     "mean": 46722983.610543,
+     "percentile": {
+      "50.000000": 32899072,
+      "99.000000": 387973120
+     }
+    }
+   },
+   "write": {
+    "io_bytes": 0,
+    "bw_bytes": 0,
+    "iops": 0.0,
+    "runtime": 0,
+    "lat_ns": {
+     "mean": 0.0
+    },
+    "clat_ns": {
+     "mean": 0.0,
+     "percentile": {}
+    }
+   }
+  },
+  {
+   "jobname": "randwrite_4k_qd16",
+   "read": {
+    "io_bytes": 0,
+    "bw_bytes": 0,
+    "iops": 0.0,
+    "runtime": 0,
+    "lat_ns": {
+     "mean": 0.0
+    },
+    "clat_ns": {
+     "mean": 0.0,
+     "percentile": {}
+    }
+   },
+   "write": {
+    "io_bytes": 6889472,
+    "bw_bytes": 113740,
+    "iops": 27.520967,
+    "runtime": 60572,
+    "lat_ns": {
+     "mean": 580563454.47919
+    },
+    "clat_ns": {
+     "mean": 580066346.343046,
+     "percentile": {
+      "50.000000": 591396864,
+      "99.000000": 1501560832
+     }
+    }
+   }
+  },
+  {
+   "jobname": "aio_4M_qd16",
+   "read": {
+    "io_bytes": 51724156928,
+    "bw_bytes": 1132637504,
+    "iops": 270.041825,
+    "runtime": 45667,
+    "lat_ns": {
+     "mean": 59174457.268245
+    },
+    "clat_ns": {
+     "mean": 58671796.364094,
+     "percentile": {
+      "50.000000": 46399488,
+      "99.000000": 480247808
+     }
+    }
+   },
+   "write": {
+    "io_bytes": 0,
+    "bw_bytes": 0,
+    "iops": 0.0,
+    "runtime": 0,
+    "lat_ns": {
+     "mean": 0.0
+    },
+    "clat_ns": {
+     "mean": 0.0,
+     "percentile": {}
+    }
+   }
+  },
+  {
+   "jobname": "aio_4M_qd16_x4",
+   "read": {
+    "io_bytes": 53104082944,
+    "bw_bytes": 1170002708,
+    "iops": 278.950383,
+    "runtime": 45388,
+    "lat_ns": {
+     "mean": 228388626.902535
+    },
+    "clat_ns": {
+     "mean": 227871018.344127,
+     "percentile": {
+      "50.000000": 189792256,
+      "99.000000": 910163968
+     }
+    }
+   },
+   "write": {
+    "io_bytes": 0,
+    "bw_bytes": 0,
+    "iops": 0.0,
+    "runtime": 0,
+    "lat_ns": {
+     "mean": 0.0
+    },
+    "clat_ns": {
+     "mean": 0.0,
+     "percentile": {}
+    }
+   }
+  }
+ ]
+}

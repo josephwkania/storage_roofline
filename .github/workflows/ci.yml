@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install fio
+        run: sudo apt-get update && sudo apt-get install -y fio
+      - name: Install
+        run: pip install ".[test]"
+      - name: Tests
+        run: pytest -q
+      - name: Quick run and plot
+        run: |
+          mkdir -p "$RUNNER_TEMP/fs"
+          storage-roofline run --dir "$RUNNER_TEMP/fs" --profile quick --size 64M \
+              --runtime 2 --files 500 --readahead 128K --label ci -o ci.json
+          storage-roofline plot ci.json -o ci.png
+          storage-roofline summary ci.json

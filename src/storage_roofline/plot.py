@@ -1,0 +1,196 @@
+"""Plots and text summary for one or more results."""
+
+from __future__ import annotations
+
+from storage_roofline import result as res
+from storage_roofline.units import fmt_size
+
+# Categorical colours, assigned in this fixed order (validated for colour-vision
+# deficiency on a light background). More results than colours: split the plot.
+COLOURS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300"]
+INK, MUTED, GRID = "#1f1f1e", "#6b6a64", "#e4e3de"
+MARKERS = {"direct_read": "o", "buffered_read": "s", "write": "^"}
+KIND_NAMES = {"direct_read": "direct reads", "buffered_read": "buffered reads (readahead)",
+              "write": "direct writes"}
+
+
+def _plt():
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        import numpy as np
+    except ImportError as exp:
+        raise SystemExit("plotting needs matplotlib and numpy: "
+                         "pip install 'storage-roofline[plot]'") from exp
+    return plt, np
+
+
+def _gbs(mbps: float) -> str:
+    return f"{mbps / 1000:.2f} GB/s" if mbps >= 1000 else f"{mbps:.0f} MB/s"
+
+
+def _check(results: list) -> None:
+    if not results:
+        raise SystemExit("no results to plot")
+    if len(results) > len(COLOURS):
+        raise SystemExit(f"at most {len(COLOURS)} results per plot; split them into groups")
+
+
+def roofline(results: list, out_file: str, title: str | None = None) -> None:
+    """Throughput against data in flight, with each result's roofs and latency line."""
+    _check(results)
+    plt, np = _plt()
+    from matplotlib.lines import Line2D
+
+    fig, ax = plt.subplots(figsize=(8.5, 5.8))
+    xs = [p["inflight_bytes"] for r in results for p in r["points"] if p.get("inflight_bytes")]
+    ys = [p["mbps"] for r in results for p in r["points"] if p["mbps"] > 0]
+    ys += [m["aggregate_mbps"] for r in results for m in r["multinode"]]
+    if not xs or not ys:
+        raise SystemExit("no plottable points in the results")
+    xmin, xmax = min(xs) / 2, max(xs) * 3
+    ymin, ymax = min(ys) / 3, max(ys) * 3
+    x = np.logspace(np.log10(xmin), np.log10(xmax), 200)
+
+    handles, labels = [], []
+    for r, colour in zip(results, COLOURS):
+        roof = res.client_roof(r)
+        cluster, cluster_nodes = res.cluster_roof(r)
+        lat = res.latency_ms(r)
+        if lat:
+            y = x / (lat / 1000) / 1e6
+            ax.plot(x, np.minimum(y, roof or np.inf), color=colour, linewidth=1,
+                    linestyle="--", alpha=0.7, zorder=1)
+        if roof:
+            ax.axhline(roof, color=colour, linewidth=1.3, zorder=1)
+        if cluster:
+            ax.axhline(cluster, color=colour, linewidth=1.3, linestyle=":", zorder=1)
+        for kind, marker in MARKERS.items():
+            pts = [p for p in r["points"] if p["kind"] == kind and p.get("inflight_bytes")]
+            if pts:
+                ax.scatter([p["inflight_bytes"] for p in pts], [p["mbps"] for p in pts],
+                           s=44, marker=marker, color=colour, edgecolor="white",
+                           linewidth=1.3, zorder=3)
+        parts = []
+        if lat:
+            parts.append(f"~{lat:.3g} ms/request")
+        if roof:
+            parts.append(f"client {_gbs(roof)}")
+        if cluster:
+            parts.append(f"cluster >= {_gbs(cluster)} ({cluster_nodes} nodes)")
+        handles.append(Line2D([], [], color=colour, linewidth=6))
+        mark = " *" if res.notes_for(r) else ""
+        labels.append(r["label"] + mark + ("\n  " + ", ".join(parts) if parts else ""))
+
+    for kind, marker in MARKERS.items():
+        handles.append(Line2D([], [], color=MUTED, marker=marker, linestyle="none", markersize=7))
+        labels.append(KIND_NAMES[kind])
+    handles += [Line2D([], [], color=MUTED, linestyle="--"), Line2D([], [], color=MUTED),
+                Line2D([], [], color=MUTED, linestyle=":")]
+    labels += ["fitted latency (throughput = in flight / latency)",
+               "client roof (best single-node read)", "cluster roof (multi-node, lower bound)"]
+
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.set_xlim(xmin, xmax)
+    ax.set_ylim(ymin, ymax)
+    ticks = [t for t in (2 ** k for k in range(10, 40, 2)) if xmin <= t <= xmax]
+    ax.set_xticks(ticks, [fmt_size(t).replace(".0", "") for t in ticks])
+    ax.minorticks_off()
+    ax.grid(True, color=GRID, linewidth=0.6, zorder=0)
+    for side in ("top", "right"):
+        ax.spines[side].set_visible(False)
+    ax.set_xlabel("Data in flight per client (request size x queue depth x streams)")
+    ax.set_ylabel("Throughput per client [MB/s]")
+    ax.set_title(title or "Storage roofline", fontsize=11)
+    ax.legend(handles, labels, fontsize=7.5, loc="upper left", bbox_to_anchor=(1.01, 1),
+              frameon=False)
+    _footnotes(fig, results)
+    fig.savefig(out_file, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+
+
+def metadata_chart(results: list, out_file: str) -> bool:
+    """Grouped bars of small-file operations per second; False if no result has them."""
+    with_meta = [(r, c) for r, c in zip(results, COLOURS) if r.get("metadata")]
+    if not with_meta:
+        return False
+    plt, np = _plt()
+    ops = [("create_per_s", "create"), ("stat_per_s", "stat"),
+           ("open_read_per_s", "open + read"), ("unlink_per_s", "unlink")]
+    fig, ax = plt.subplots(figsize=(7.5, 4.2))
+    width = 0.8 / len(with_meta)
+    for i, (r, colour) in enumerate(with_meta):
+        m = r["metadata"]
+        values = [m.get(key) or 0 for key, _ in ops]
+        pos = np.arange(len(ops)) + (i - (len(with_meta) - 1) / 2) * width
+        ax.bar(pos, values, width=width * 0.92, color=colour,
+               label=f"{r['label']} ({'cold' if m.get('cold') else 'warm'} client cache)")
+    ax.set_xticks(np.arange(len(ops)), [name for _, name in ops])
+    ax.set_yscale("log")
+    ax.set_ylabel("Files per second")
+    ax.set_title(f"Small files ({with_meta[0][0]['metadata']['file_bytes'] // 1024} KiB each)",
+                 fontsize=11)
+    ax.grid(True, axis="y", color=GRID, linewidth=0.6, zorder=0)
+    ax.set_axisbelow(True)
+    for side in ("top", "right"):
+        ax.spines[side].set_visible(False)
+    ax.legend(fontsize=8, loc="upper left", bbox_to_anchor=(1.01, 1), frameon=False)
+    _footnotes(fig, [r for r, _ in with_meta])
+    fig.savefig(out_file, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+    return True
+
+
+def _footnotes(fig, results: list) -> None:
+    """Each result's caveats, under the plot."""
+    lines = [f"* {r['label']}: {note}" for r in results for note in res.notes_for(r)]
+    if lines:
+        fig.text(0.01, -0.02, "\n".join(lines), fontsize=7, color=MUTED, va="top",
+                 ha="left", wrap=True)
+
+
+def summary(results: list) -> str:
+    """Plain-text table of the headline numbers and the context."""
+    K, M = 1024, 1024 ** 2
+    rows = []
+    for r in results:
+        c = r["context"]
+        cluster, nodes = res.cluster_roof(r)
+        q1 = res.find_point(r, "direct_read", "randread", 4 * K, 1)
+        w = res.find_point(r, "write", "randwrite", 4 * K, 16)
+        m = r.get("metadata") or {}
+        nic = max(c.get("nics_mbps", {}).values(), default=None)
+
+        def fmt(value, spec):
+            return format(value, spec) if value is not None else "-"
+
+        rows.append([
+            ("label", r["label"]),
+            ("date", r["created"][:10]),
+            ("filesystem", f"{c.get('fs_type')} at {c.get('mount_point')}"),
+            ("client NIC", f"{nic / 1000:g} Gb/s" if nic else "-"),
+            ("readahead", fmt_size(c["readahead_bytes"]) if c.get("readahead_bytes") else "-"),
+            ("read latency (fitted)", fmt(res.latency_ms(r), ".3g") + " ms"),
+            ("client roof", _gbs(res.client_roof(r)) if res.client_roof(r) else "-"),
+            ("cluster roof", f">= {_gbs(cluster)} ({nodes} nodes)" if cluster else "-"),
+            ("4K random read QD1", fmt(q1 and q1["iops"], ".0f") + " IOPS"),
+            ("4K random write QD16", (fmt(w and w["iops"], ".0f") + " IOPS, p50 "
+                                      + fmt(w and w["lat_p50_ms"], ".3g") + " ms")),
+            ("small files open+read", fmt(m.get("open_read_per_s"), ".0f") + "/s"
+             + (" (cold)" if m.get("cold") else " (warm)" if m else "")),
+            ("small files create", fmt(m.get("create_per_s"), ".0f") + "/s"),
+            ("python import", fmt(m.get("import_s"), ".1f") + " s" if m.get("import_s") else "-"),
+        ])
+    names = [k for k, _ in rows[0]]
+    notes = [f"* {r['label']}: {note}" for r in results for note in res.notes_for(r)]
+    name_width = max(len(n) for n in names)
+    col_widths = [max(len(str(v)) for _, v in r) for r in rows]
+    lines = []
+    for i, name in enumerate(names):
+        cells = "  ".join(f"{str(r[i][1]):<{w}}" for r, w in zip(rows, col_widths))
+        lines.append(f"{name:<{name_width}}  {cells}".rstrip())
+    if notes:
+        lines += ["", "Notes:", *notes]
+    return "\n".join(lines)
