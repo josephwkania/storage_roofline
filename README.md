@@ -88,6 +88,34 @@ Each result gets a colour, its fitted latency line (dashed), its client roof
 (solid) and, if measured, its cluster roof (dotted). `summary` prints the
 headline numbers side by side.
 
+## Repeated runs
+
+Runs with the same `--label` are combined: `plot` and `summary` show the
+median of each test with its range across runs (minimum to maximum, or 10th
+to 90th percentile from 10 runs), and shade the roofs' range. `history` plots
+the headline numbers over time, one line per label, and marks changes found
+in the recorded context (kernel, readahead, mount options, fio):
+
+```bash
+storage-roofline history results/*.json --since 2026-01-01 -o history.png
+```
+
+It also prints each label's latest values against the median of earlier runs.
+
+To sample different times of day, `slurm --random-delay 23h` sets the job's
+earliest start (`sbatch --begin`) to a random time within the next 23 hours.
+From cron, once a day:
+
+```
+0 0 * * * storage-roofline slurm --dir /scratch/me/roofline --nodes 1 --profile quick --size 8G --runtime 15 --files 5000 --label "scratch daily" --output-dir /home/me/roofline_results --random-delay 23h --submit >> /home/me/roofline_results/cron.log 2>&1
+```
+
+A quick one-node run takes about five minutes and holds two nodes (the
+second only reads the small files). Leave the multi-node test out of
+scheduled runs; it loads the whole filesystem. Running the package from a
+git checkout means code changes take effect on the next scheduled run; use a
+tagged release or an installed copy if results should stay comparable.
+
 ## What it runs
 
 | Part | Tests |

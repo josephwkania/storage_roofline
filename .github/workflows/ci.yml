@@ -6,10 +6,15 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ["3.9", "3.12"]
+        include:
+          # Oldest supported Python (RHEL 9's system Python), on a fixed image:
+          # new runner images no longer get builds of end-of-life Pythons.
+          - {python-version: "3.9", os: ubuntu-24.04}
+          - {python-version: "3.13", os: ubuntu-latest}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
