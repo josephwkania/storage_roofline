@@ -12,7 +12,9 @@ K = 1024
 
 # (key, axis label, how to get it from one run)
 METRICS = [
-    ("latency_ms", "Read latency [ms]", lambda r: res.latency_ms(r)),
+    ("latency_ms", "Read latency,\n<= 64 KiB [ms]", lambda r: res.latency_ms(r)),
+    ("stream_mbps", "Per-stream read\nrate [MB/s]",
+     lambda r: (res.per_stream_fit(r) or (None, None))[1]),
     ("client_roof", "Client roof [MB/s]", lambda r: res.client_roof(r)),
     ("iops_4k_qd1", "4 KiB read QD1 [IOPS]",
      lambda r: (res.find_point(r, "direct_read", "randread", 4 * K, 1) or {}).get("iops")),

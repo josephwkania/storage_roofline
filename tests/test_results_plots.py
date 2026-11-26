@@ -191,3 +191,39 @@ def test_random_begin(tmp_path):
                               readahead=None, read_once=False, begin=None, random_delay=86400)
     line = [l for l in slurm.script(args, "f").splitlines() if "--begin" in l][0]
     assert 0 <= int(line.split("now+")[1]) <= 86400
+
+
+def size_dependent_result(roof, l0_ms=3.0, stream_mbps=210.0):
+    """Reads whose time per request is L0 + size / B (like NFS or EFS), capped at roof."""
+    r = res.new("efs-like", {"fs_type": "nfs4", "mount_point": "/t", "readahead_bytes": 128 * K,
+                             "nics_mbps": {}}, "quick", 64 * M, 1)
+    for bs, qd in ((4 * K, 1), (4 * K, 16), (M, 16), (4 * M, 1), (4 * M, 4), (4 * M, 16)):
+        t = l0_ms / 1e3 + bs / (stream_mbps * 1e6)
+        mbps = min(bs * qd / t / 1e6, roof)
+        r["points"].append({"kind": "direct_read", "rw": "randread" if bs < 4 * M else "read",
+                            "bs": bs, "iodepth": qd, "numjobs": 1, "inflight_bytes": bs * qd,
+                            "mbps": mbps, "iops": mbps * 1e6 / bs, "lat_mean_ms": t * 1e3,
+                            "lat_p50_ms": t * 1e3, "lat_p99_ms": t * 3e3})
+    # A buffered point whose estimated in-flight data is far off (as on NFS).
+    r["points"].append({"kind": "buffered_read", "rw": "read", "bs": M, "iodepth": 1, "numjobs": 1,
+                        "inflight_bytes": 128 * K, "mbps": 0.6 * roof, "iops": 1, "lat_mean_ms": 1,
+                        "lat_p50_ms": 1, "lat_p99_ms": 1})
+    return r
+
+
+def test_latency_does_not_depend_on_roof():
+    low, high = size_dependent_result(roof=315), size_dependent_result(roof=1440)
+    assert res.latency_ms(low) == pytest.approx(3.0, rel=0.01)
+    assert res.latency_ms(high) == pytest.approx(3.0, rel=0.01)
+
+
+def test_per_stream_fit_recovers_l0_and_rate():
+    l0, rate = res.per_stream_fit(size_dependent_result(roof=1440))
+    assert l0 == pytest.approx(3.0, rel=0.02)
+    assert rate == pytest.approx(210.0, rel=0.02)
+
+
+def test_per_stream_fit_latency_bound():
+    # constant latency at every size (like CephFS): no per-stream limit to report
+    fit = res.per_stream_fit(fake_result("ceph", 25, 1160))
+    assert fit is not None and fit[1] is None or fit[1] > 1e5

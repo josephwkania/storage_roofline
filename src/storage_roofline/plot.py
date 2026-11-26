@@ -95,6 +95,9 @@ def roofline(results: list, out_file: str, title: str | None = None) -> None:
         parts = []
         if lat:
             parts.append(f"~{lat:.3g} ms/request")
+        fit = res.per_stream_fit(r)
+        if fit and fit[1]:
+            parts.append(f"~{_gbs(fit[1])} per stream")
         if roof:
             parts.append(f"client {_gbs(roof)}")
         if cluster:
@@ -112,7 +115,7 @@ def roofline(results: list, out_file: str, title: str | None = None) -> None:
             labels.append(KIND_NAMES[kind])
     for drawn, style, text in (
             (any(res.latency_ms(r) for r in results), "--",
-             "fitted latency (throughput = in flight / latency)"),
+             "latency of small requests (throughput = in flight / latency)"),
             (any(res.client_roof(r) for r in results), "-", "client roof (best single-node read)"),
             (any(res.cluster_roof(r)[0] for r in results), ":",
              "cluster roof (multi-node, lower bound)")):
@@ -256,6 +259,16 @@ def _footnotes(fig, results: list) -> None:
                  ha="left", wrap=True)
 
 
+def _stream(r: dict) -> str:
+    """Per-stream rate from the L0 + size / B fit, for the summary."""
+    fit = res.per_stream_fit(r)
+    if not fit:
+        return "-"
+    if not fit[1]:
+        return "not size-limited"
+    return f"{_gbs(fit[1])} (L0 {fit[0]:.3g} ms)"
+
+
 def summary(results: list) -> str:
     """Plain-text table of the headline numbers and the context."""
     K, M = 1024, 1024 ** 2
@@ -278,7 +291,8 @@ def summary(results: list) -> str:
             ("filesystem", f"{c.get('fs_type')} at {c.get('mount_point')}"),
             ("client NIC", f"{nic / 1000:g} Gb/s" if nic else "-"),
             ("readahead", fmt_size(c["readahead_bytes"]) if c.get("readahead_bytes") else "-"),
-            ("read latency (fitted)", fmt(res.latency_ms(r), ".3g") + " ms"),
+            ("read latency (<= 64 KiB)", fmt(res.latency_ms(r), ".3g") + " ms"),
+            ("per-stream read rate", _stream(r)),
             ("client roof", _gbs(res.client_roof(r)) if res.client_roof(r) else "-"),
             ("cluster roof", f">= {_gbs(cluster)} ({nodes} nodes)" if cluster else "-"),
             ("4K random read QD1", fmt(q1 and q1["iops"], ".0f") + " IOPS"),

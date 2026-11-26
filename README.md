@@ -7,6 +7,10 @@ results together so filesystems and clusters can be compared.
 - **Latency** (the diagonal): with a fixed time per request, throughput is
   data in flight ÷ latency (Little's law). On a log-log plot that is a
   diagonal line; slower storage sits further right.
+- **Per-stream rate**: on some filesystems a request also takes longer the
+  larger it is (time ≈ L0 + size ÷ B), so one stream of requests can't go
+  faster than B however large they are. Readahead and queue depth work around
+  it.
 - **Client roof**: the fastest one node can read, usually its network link.
 - **Cluster roof**: the total when several nodes read at once, shared by every
   user of the filesystem.
@@ -84,9 +88,24 @@ storage-roofline summary cephfs.json lustre.json nfs.json
 `plot` writes `roofline.png`, `roofline_metadata.png` (small files) and
 `roofline_iops.png`, the same points as IOPS against operations per byte, the
 axes of Zhu et al.'s I/O roofline (see Related work).
-Each result gets a colour, its fitted latency line (dashed), its client roof
-(solid) and, if measured, its cluster roof (dotted). `summary` prints the
-headline numbers side by side.
+Each result gets a colour, its latency line (dashed), its client roof (solid)
+and, if measured, its cluster roof (dotted). `summary` prints the headline
+numbers side by side.
+
+How the latency numbers are worked out:
+
+- The **latency line** uses only direct reads of 64 KiB or less, below half the
+  client roof: time per request = data in flight ÷ throughput, median over
+  those points. Small requests, because where time grows with request size a
+  median over mixed sizes would depend on how many large-request points the
+  roof cutoff happens to keep. Buffered reads are left out (their data in
+  flight is only estimated from the readahead setting), as are points near the
+  roof (their time includes queueing).
+- The **per-stream rate** B comes from fitting time = L0 + size ÷ B over direct
+  reads with one request in flight. It is shown as "not size-limited" when the
+  size term is small next to L0 even for the largest request (e.g. Ceph on
+  HDDs, where every request costs about the same), and left out when too few
+  request sizes are below the cutoff.
 
 ## Repeated runs
 

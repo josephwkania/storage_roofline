@@ -99,18 +99,74 @@ def cluster_roof(result: dict) -> tuple:
     return best["aggregate_mbps"], best["nodes"]
 
 
-def latency_ms(result: dict, kinds=("direct_read", "buffered_read")) -> float | None:
-    """Typical time per request: median of in-flight / throughput over the
-    points well below the client roof (the latency-bound ones)."""
-    roof = client_roof(result) or float("inf")
-    values = sorted(p["inflight_bytes"] / (p["mbps"] * 1e6) * 1e3
-                    for p in result["points"]
-                    if p["kind"] in kinds and p.get("inflight_bytes") and p["mbps"] > 0
-                    and p["mbps"] < 0.8 * roof)
+# Points used to fit latency: direct reads (their data in flight is exact; for
+# buffered reads it is only an estimate from the readahead setting), well below
+# the client roof (near it, time per request includes queueing).
+FIT_ROOF_FRACTION = 0.5
+SMALL_REQUEST = 64 * 1024
+
+
+def _median(values: list) -> float | None:
+    values = sorted(values)
     if not values:
         return None
     mid = len(values) // 2
     return values[mid] if len(values) % 2 else (values[mid - 1] + values[mid]) / 2
+
+
+def _fit_points(result: dict) -> list:
+    roof = client_roof(result) or float("inf")
+    return [p for p in result["points"]
+            if p["kind"] == "direct_read" and p.get("inflight_bytes") and p["mbps"] > 0
+            and p["mbps"] < FIT_ROOF_FRACTION * roof]
+
+
+def request_ms(p: dict) -> float:
+    """Time per request by Little's law: data in flight / throughput."""
+    return p["inflight_bytes"] / (p["mbps"] * 1e6) * 1e3
+
+
+def latency_ms(result: dict) -> float | None:
+    """
+    Fixed time per request: the median over direct reads of at most 64 KiB,
+    well below the client roof. Small requests, because on many filesystems
+    time per request also grows with request size (see per_stream_fit); a
+    median over mixed sizes would depend on which large-request points the
+    roof cutoff happens to keep. Falls back to all eligible direct reads if
+    there are no small ones.
+    """
+    points = _fit_points(result)
+    small = [p for p in points if p["bs"] <= SMALL_REQUEST]
+    return _median([request_ms(p) for p in (small or points)])
+
+
+def per_stream_fit(result: dict) -> tuple | None:
+    """
+    Fits time per request = L0 + size / B over direct reads with one request
+    in flight (QD1, one job), below the roof cutoff. Returns (L0 in ms, B in
+    MB/s), with B None when time does not grow with size (latency-bound at
+    every size); None if there are fewer than two request sizes.
+
+    B is the rate a single stream of requests can reach however large they
+    are: what readahead and queue depth work around.
+    """
+    pts = [p for p in _fit_points(result) if p["iodepth"] == 1 and p["numjobs"] == 1]
+    sizes = {p["bs"] for p in pts}
+    if len(sizes) < 2:
+        return None
+    xs = [p["bs"] for p in pts]
+    ys = [request_ms(p) / 1e3 for p in pts]
+    n = len(xs)
+    mx, my = sum(xs) / n, sum(ys) / n
+    sxx = sum((x - mx) ** 2 for x in xs)
+    slope = sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / sxx
+    intercept = my - slope * mx
+    l0 = max(intercept, 0.0) * 1e3
+    # Latency-bound at every size tested (e.g. CephFS on HDDs): the size term
+    # is small next to L0 even for the largest request, so B is not meaningful.
+    if slope <= 0 or slope * max(xs) * 1e3 < 0.25 * l0:
+        return (latency_ms(result), None)
+    return (l0, 1 / slope / 1e6)
 
 
 def find_point(result: dict, kind: str, rw: str, bs: int, iodepth: int, numjobs: int = 1):
